@@ -1,0 +1,51 @@
+# Controlled derivative of release-notes-min-workflow.yml.
+# Steps 1 and 2 intentionally retain the security-relevant upstream expressions.
+# Step 3 uses the peter-evans persistent workspace extraheader behavior. It adds
+# a single status call to deterministically exercise a planted core.fsmonitor
+# command and removes the ephemeral extraheader after the consumer finishes.
+name: Generate Release Notes (controlled delimiter chain)
+on:
+  release:
+    types: ['published']
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  generate-release-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: main
+      - name: 'Get release information'
+        id: release_info
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          TIME="${{ github.event.release.created_at }}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "TIME=${TIME}" >> "$GITHUB_OUTPUT"
+          echo 'RAW_CHANGELOG<<EOF' >> "$GITHUB_OUTPUT"
+          printf "%s\n" "$BODY" >> "$GITHUB_OUTPUT"
+          echo 'EOF' >> "$GITHUB_OUTPUT"
+        env:
+          BODY: '${{ github.event.release.body }}'
+      - name: 'Validate version'
+        id: validate_version
+        run: |
+          if echo "${{ steps.release_info.outputs.VERSION }}" | grep -q "nightly"; then
+            echo "CONTINUE=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "CONTINUE=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 'Create Pull Request (controlled peter-evans model)'
+        if: "steps.validate_version.outputs.CONTINUE == 'true'"
+        env:
+          PAT: ${{ secrets.STANDIN_PAT }}
+        run: |
+          b64=$(printf 'x-access-token:%s' "$PAT" | base64 -w0)
+          git config "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${b64}"
+          git status
+          test -f /tmp/p && echo "FS_MONITOR_ATTACK_MARKER=PAT_PRESENT" || echo "FS_MONITOR_ATTACK_MARKER=absent"
+          git config --unset-all "http.https://github.com/.extraheader"
